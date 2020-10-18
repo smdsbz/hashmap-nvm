@@ -6,7 +6,11 @@ set(CMAKE_C_STANDARD 99)
 ##############################################
 # Build options
 
-option(HASHMAP_BUILD_TESTS "Build tests" OFF)
+option(HASHMAP_BUILD_TESTS "Build tests" ON)
+option(WITH_NVMEMUL "Build for Quartz" ON)
+if(WITH_NVMEMUL)
+    add_definitions(-DWITH_NVMEMUL)
+endif(WITH_NVMEMUL)
 
 ##############################################
 # Set default build to release
@@ -21,6 +25,10 @@ endif()
 add_library(hashmap
     src/hashmap.c
 )
+if(WITH_NVMEMUL)
+    link_directories(/root/zxg-workspace/quartz/build/src/lib)
+    target_link_libraries(hashmap -lnvmemul)
+endif(WITH_NVMEMUL)
 
 # Add an alias so that library can be used inside the build tree,
 # e.g. when testing

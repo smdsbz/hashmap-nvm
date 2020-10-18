@@ -24,12 +24,32 @@
 /* Return the next linear probe index */
 #define HASHMAP_PROBE_NEXT(map, index)  HASHMAP_SIZE_MOD(map, (index) + 1)
 
+#ifdef WITH_NVMEMUL
+void pflush_n(void *addr, size_t size)
+{
+    uint64_t *ptr;
+    for (ptr = addr; ptr < (uint64_t*)(addr + size); ++ptr)
+	pflush(ptr);
+}
+void *pstrdup(const void *s)
+{
+    size_t size = strlen(s) + 1;
+    char *new = pmalloc(size);
+    memcpy(new, s, size);
+    pflush_n(new, size);
+    asm_mfence();
+    return new;
+}
+void pkeyfree(void *k)
+{
+    pfree(k, strlen(k) + 1);
+}
+#endif
 
 struct hashmap_entry {
     void *key;
     void *data;
 };
-
 
 /*
  * Calculate the optimal table size, given the specified max number
@@ -135,6 +155,10 @@ static void hashmap_entry_remove(struct hashmap_base *hb, struct hashmap_entry *
         hb->key_free(removed_entry->key);
     }
     --hb->size;
+#ifdef WITH_NVMEMUL
+    pflush((uint64_t*)&hb->size);
+    asm_mfence();
+#endif
 
     /* Fill the free slot in the chain */
     index = HASHMAP_PROBE_NEXT(hb, removed_index);
@@ -151,11 +175,18 @@ static void hashmap_entry_remove(struct hashmap_base *hb, struct hashmap_entry *
             *removed_entry = *entry;
             removed_index = index;
             removed_entry = entry;
+#ifdef WITH_NVMEMUL
+	    pflush_pobj(removed_entry);
+	    asm_mfence();
+#endif
         }
         index = HASHMAP_PROBE_NEXT(hb, index);
     }
     /* Clear the last removed entry */
     memset(removed_entry, 0, sizeof(*removed_entry));
+#ifdef WITH_NVMEMUL
+    pflush_pobj(removed_entry);
+#endif
 }
 
 /*
@@ -174,7 +205,11 @@ static int hashmap_rehash(struct hashmap_base *hb, size_t table_size)
     assert((table_size & (table_size - 1)) == 0);
     assert(table_size >= hb->size);
 
+#ifndef WITH_NVMEMUL
     new_table = (struct hashmap_entry *)calloc(table_size, sizeof(struct hashmap_entry));
+#else
+    new_table = (struct hashmap_entry*)pmalloc(table_size * sizeof(struct hashmap_entry));
+#endif
     if (!new_table) {
         return -ENOMEM;
     }
@@ -182,6 +217,11 @@ static int hashmap_rehash(struct hashmap_base *hb, size_t table_size)
     old_table = hb->table;
     hb->table_size = table_size;
     hb->table = new_table;
+#ifdef WITH_NVMEMUL
+    pflush((uint64_t*)&hb->table_size);
+    pflush((uint64_t*)&hb->table);
+    asm_mfence();
+#endif
 
     /* Rehash */
     for (entry = old_table; entry < &old_table[old_size]; ++entry) {
@@ -194,8 +234,16 @@ static int hashmap_rehash(struct hashmap_base *hb, size_t table_size)
 
         /* Shallow copy */
         *new_entry = *entry;
+#ifdef WITH_NVMEMUL
+	pflush((uint64_t*)new_entry);
+	asm_mfence();
+#endif
     }
+#ifndef WITH_NVMEMUL
     free(old_table);
+#else
+    pfree(old_table, sizeof(*old_table) * old_size);
+#endif
     return 0;
 }
 
@@ -235,6 +283,10 @@ void hashmap_base_init(struct hashmap_base *hb,
     hb->table_size_init = HASHMAP_SIZE_DEFAULT;
     hb->hash = hash_func;
     hb->compare = compare_func;
+#ifdef WITH_NVMEMUL
+    pflush_pobj(hb);
+    asm_mfence();
+#endif
 }
 
 /*
@@ -246,8 +298,16 @@ void hashmap_base_cleanup(struct hashmap_base *hb)
         return;
     }
     hashmap_free_keys(hb);
+#ifndef WITH_NVMEMUL
     free(hb->table);
+#else
+    pfree(hb->table, sizeof(*hb->table) * hb->table_size);
+#endif
     memset(hb, 0, sizeof(*hb));
+#ifdef WITH_NVMEMUL
+    pflush_pobj(hb);
+    asm_mfence();
+#endif
 }
 
 /*
@@ -257,6 +317,12 @@ void hashmap_base_set_key_alloc_funcs(struct hashmap_base *hb,
     void *(*key_dup_func)(const void *),
     void (*key_free_func)(void *))
 {
+#ifdef WITH_NVMEMUL
+    assert(key_dup_func == strdup);
+    assert(key_free_func == free);
+    key_dup_func = pstrdup;
+    key_free_func = pkeyfree;
+#endif
     hb->key_dup = key_dup_func;
     hb->key_free = key_free_func;
 }
@@ -277,11 +343,19 @@ int hashmap_base_reserve(struct hashmap_base *hb, size_t capacity)
     /* Set the minimal table init size to support the specified capacity */
     hb->table_size_init = HASHMAP_SIZE_MIN;
     hb->table_size_init = hashmap_calc_table_size(hb, capacity);
+#ifdef WITH_NVMEMUL
+    pflush((uint64_t*)&hb->table_size_init);
+    asm_mfence();
+#endif
 
     if (hb->table_size_init > hb->table_size) {
         r = hashmap_rehash(hb, hb->table_size_init);
         if (r < 0) {
             hb->table_size_init = old_size_init;
+#ifdef WITH_NVMEMUL
+	    pflush((uint64_t*)&hb->table_size_init);
+	    asm_mfence();
+#endif
         }
     }
     return r;
@@ -330,14 +404,27 @@ int hashmap_base_put(struct hashmap_base *hb, const void *key, void *data)
     if (hb->key_dup) {
         /* Allocate copy of key to simplify memory management */
         entry->key = hb->key_dup(key);
+#ifdef WITH_NVMEMUL
+	pflush((uint64_t*)&entry->key);
+	asm_mfence();
+#endif
         if (!entry->key) {
             return -ENOMEM;
         }
     } else {
         entry->key = (void *)key;
+#ifdef WITH_NVMEMUL
+	pflush((uint64_t*)&entry->key);
+	asm_mfence();
+#endif
     }
     entry->data = data;
     ++hb->size;
+#ifdef WITH_NVMEMUL
+    pflush((uint64_t*)&entry->data);
+    pflush((uint64_t*)&hb->size);
+    asm_mfence();
+#endif
     return 0;
 }
 
@@ -390,6 +477,9 @@ void hashmap_base_clear(struct hashmap_base *hb)
     hashmap_free_keys(hb);
     hb->size = 0;
     memset(hb->table, 0, sizeof(struct hashmap_entry) * hb->table_size);
+#ifdef WITH_NVMEMUL
+    pflush_n(hb->table, sizeof(struct hashmap_entry) * hb->table_size);
+#endif
 }
 
 /*
@@ -398,18 +488,41 @@ void hashmap_base_clear(struct hashmap_base *hb)
 void hashmap_base_reset(struct hashmap_base *hb)
 {
     struct hashmap_entry *new_table;
+#ifdef WITH_NVMEMUL
+    size_t table_size;
+#endif
 
     hashmap_free_keys(hb);
     hb->size = 0;
+#ifdef WITH_NVMEMUL
+    pflush((uint64_t*)&hb->size);
+    asm_mfence();
+#endif
     if (hb->table_size != hb->table_size_init) {
+#ifndef WITH_NVMEMUL
         new_table = (struct hashmap_entry *)realloc(hb->table,
                 sizeof(struct hashmap_entry) * hb->table_size_init);
+#else
+	table_size = sizeof(struct hashmap_entry) * hb->table_size_init;
+	new_table = (struct hashmap_entry*)pmalloc(table_size);
+	memcpy(new_table, hb->table, table_size);
+	pfree(hb->table, table_size);
+	pflush_n(new_table, table_size);
+#endif
         if (new_table) {
             hb->table = new_table;
             hb->table_size = hb->table_size_init;
+#ifdef WITH_NVMEMUL
+	    pflush((uint64_t*)&hb->table);
+	    pflush((uint64_t*)&hb->table_size);
+	    asm_mfence();
+#endif
         }
     }
     memset(hb->table, 0, sizeof(struct hashmap_entry) * hb->table_size);
+#ifdef WITH_NVMEMUL
+    pflush_n(hb->table, sizeof(struct hashmap_entry) * hb->table_size);
+#endif
 }
 
 /*
@@ -498,6 +611,10 @@ int hashmap_base_iter_set_data(struct hashmap_entry *iter, void *data)
         return -EINVAL;
     }
     iter->data = data;
+#ifdef WITH_NVMEMUL
+    pflush((uint64_t*)&iter->data);
+    asm_mfence();
+#endif
     return 0;
 }
 

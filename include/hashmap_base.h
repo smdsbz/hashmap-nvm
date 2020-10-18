@@ -7,6 +7,25 @@
 
 #pragma once
 
+#ifdef WITH_NVMEMUL
+#include <stdint.h>
+/* NVM management
+ * Run program with LD_PRELOAD pointing to pre-compiled libnvmemul.so
+ * and NVMEMUL_INI to nvmemul.ini
+ */
+void *pmalloc(size_t size);
+void pfree(void *start, size_t size);
+void pflush(uint64_t *addr);
+void pflush_n(void *addr, size_t size);
+#define pflush_pobj(p) pflush_n((p), sizeof(*(p)))
+#define asm_mfence()				\
+({						\
+	__asm__ __volatile__ ("mfence");	\
+})
+void *pstrdup(const void *s);
+void pkeyfree(void *k);
+#endif
+
 struct hashmap_entry;
 
 struct hashmap_base {

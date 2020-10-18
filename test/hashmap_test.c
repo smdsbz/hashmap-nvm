@@ -53,7 +53,11 @@ void **test_keys_alloc(size_t num)
 {
     void **keys;
 
+#ifndef WITH_NVMEMUL
     keys = (void **)calloc(num, sizeof(void *));
+#else
+    keys = (void**)pmalloc(num * sizeof(void*));
+#endif
     if (!keys) {
         printf("malloc failed\n");
         exit(1);
@@ -67,7 +71,11 @@ void *test_key_alloc_random_str(void)
     unsigned num;
     char *key;
 
+#ifndef WITH_NVMEMUL
     key = (char *)malloc(TEST_KEY_STR_LEN + 1);
+#else
+    key = (char*)pmalloc(TEST_KEY_STR_LEN + 1);
+#endif
     if (!key) {
         printf("malloc failed\n");
         exit(1);
@@ -84,7 +92,11 @@ void *test_key_alloc_random_int(void)
 {
     uint64_t *key;
 
+#ifndef WITH_NVMEMUL
     key = (uint64_t *)malloc(sizeof(*key));
+#else
+    key = (uint64_t*)pmalloc(sizeof(*key));
+#endif
     if (!key) {
         printf("malloc failed\n");
         exit(1);
@@ -101,7 +113,11 @@ void *test_key_alloc_sequential_str(size_t index)
 {
     char *key;
 
+#ifndef WITH_NVMEMUL
     key = (char *)malloc(TEST_KEY_STR_LEN + 1);
+#else
+    key = (char*)pmalloc(TEST_KEY_STR_LEN + 1);
+#endif
     if (!key) {
         printf("malloc failed\n");
         exit(1);
@@ -114,7 +130,11 @@ void *test_key_alloc_sequential_int(size_t index)
 {
     uint64_t *key;
 
+#ifndef WITH_NVMEMUL
     key = (uint64_t *)malloc(sizeof(*key));
+#else
+    key = (uint64_t*)pmalloc(sizeof(*key));
+#endif
     if (!key) {
         printf("malloc failed\n");
         exit(1);
