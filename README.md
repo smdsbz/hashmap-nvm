@@ -1,3 +1,7 @@
+__🚫拒绝抄作业🚫__
+__🚫拒绝抄作业🚫__
+__🚫拒绝抄作业🚫__
+
 # hashmap v2
 ![ci](https://github.com/DavidLeeds/hashmap/workflows/CI/badge.svg)
 
